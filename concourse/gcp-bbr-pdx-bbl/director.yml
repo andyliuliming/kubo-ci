@@ -1,0 +1,3 @@
+concourse_secrets_lpass_note_id: 1124880505947455779
+private_note_id: 1094931600825985211 # Note which has creds.yml as attachment
+private_attachment_id:  att-1094931600825985211-63897 # Attachment ID of creds.yml

@@ -1,0 +1,176 @@
+---
+groups:
+- name: all
+  jobs:
+  - build-kubo-release
+  - deploy-k8s-bbr-west
+
+resource_types:
+- name: gcs
+  type: docker-image
+  source:
+    repository: frodenas/gcs-resource
+
+- name: bosh-deployment
+  type: docker-image
+  source:
+    repository: cloudfoundry/bosh-deployment-resource
+
+- name: bosh-errand
+  type: docker-image
+  source:
+    repository: cfcommunity/bosh2-errand-resource
+
+resources:
+- name: kubo-version
+  type: semver
+  source:
+    driver: gcs
+    key: versions/kubo-version-for-bbr
+    json_key: ((gcs-json-key))
+    bucket: kubo-pipeline-store
+
+- name: cfcr-deployment
+  type: bosh-deployment
+  source:
+    deployment: ci-service
+
+- name: run-apply-addons-errand
+  type: bosh-errand
+  source:
+    deployment: ci-service
+
+- name: run-smoke-tests-errand
+  type: bosh-errand
+  source:
+    deployment: ci-service
+
+- name: stemcell
+  type: bosh-io-stemcell
+  source:
+    name: bosh-google-kvm-ubuntu-xenial-go_agent
+
+- name: gcs-source-json-west
+  type: gcs
+  source:
+    json_key: ((gcs-json-key))
+    bucket: kubo-pipeline-store
+    versioned_file: bbl-source-sfo.json
+
+- name: gcs-kubeconfig-west
+  type: gcs
+  source:
+    json_key: ((gcs-json-key))
+    bucket: kubo-pipeline-store
+    versioned_file: k8s/config-west
+
+- name: git-kubo-ci
+  type: git
+  source:
+    uri: git@github.com:pivotal-cf-experimental/kubo-ci.git
+    branch: master
+    private_key: ((git-ssh-key.private_key))
+
+- name: git-kubo-deployment
+  type: git
+  source:
+    uri: git@github.com:cloudfoundry-incubator/kubo-deployment.git
+    branch: master
+    private_key: ((git-ssh-key.private_key))
+    ignore_paths:
+    - 'LICENSE'
+    - 'NOTICE'
+
+- name: git-kubo-release
+  type: git
+  source:
+    uri: git@github.com:cloudfoundry-incubator/kubo-release.git
+    branch: master
+    private_key: ((git-ssh-key.private_key))
+    ignore_paths:
+    - '*.md'
+    - 'LICENSE'
+    - 'NOTICE'
+
+- name: gcs-kubo-release-tarball-untested
+  type: gcs
+  source:
+    json_key: ((gcs-json-key))
+    bucket: kubo-pipeline-store
+    regexp: dev-builds/kubo-release-(.*).tgz
+
+jobs:
+- name: build-kubo-release
+  plan:
+  - aggregate:
+    - get: git-kubo-ci
+    - get: git-kubo-deployment
+      trigger: true
+    - get: kubo-version
+      params:
+        pre: dev-bbr
+    - get: git-kubo-release
+      trigger: true
+  - task: build-kubo-release
+    file: git-kubo-ci/tasks/build-kubo-release.yml
+  - put: gcs-kubo-release-tarball-untested
+    params:
+      file: kubo-release/kubo-release-*.tgz
+  - put: kubo-version
+    params:
+      pre: dev-bbr
+
+- name: deploy-k8s-bbr-west
+  plan:
+  - aggregate:
+    - get: git-kubo-ci
+    - get: git-kubo-deployment
+    - get: git-kubo-release
+    - get: gcs-kubo-release-tarball-untested
+      passed: ['build-kubo-release']
+      trigger: true
+    - get: gcs-source-json-west
+    - get: stemcell
+  - put: cfcr-deployment
+    tags: [gcp-bbr]
+    params:
+      manifest: git-kubo-deployment/manifests/cfcr.yml
+      cleanup: true
+      no_redact: true
+      ops_files:
+      - git-kubo-deployment/manifests/ops-files/use-runtime-config-bosh-dns.yml
+      - git-kubo-deployment/manifests/ops-files/allow-privileged-containers.yml
+      - git-kubo-deployment/manifests/ops-files/disable-deny-escalating-exec.yml
+      - git-kubo-deployment/manifests/ops-files/addons-spec.yml
+      - git-kubo-deployment/manifests/ops-files/enable-bbr.yml
+      - git-kubo-deployment/manifests/ops-files/iaas/gcp/cloud-provider.yml
+      - git-kubo-deployment/manifests/ops-files/misc/single-master.yml
+      var_files:
+        addons-spec: "/tmp/build/put/git-kubo-ci/specs/guestbook.yml"
+      stemcells:
+      - stemcell/stemcell.tgz
+      releases:
+      - gcs-kubo-release-tarball-untested/*.tgz
+      source_file: gcs-source-json-west/bbl-source-sfo.json
+      vars:
+        deployment_name: cfcr-west
+        worker_count: 3
+  - task: update-kubeconfig
+    tags: [gcp-bbr]
+    file: git-kubo-ci/tasks/update-kubeconfig.yml
+  - put: run-apply-addons-errand
+    tags: [gcp-bbr]
+    params:
+      name: apply-addons
+      keep_alive: true
+      source_file: gcs-source-json-west/bbl-source-sfo.json
+  - put: run-smoke-tests-errand
+    tags: [gcp-bbr]
+    params:
+      name: smoke-tests
+      keep_alive: true
+      source_file: gcs-source-json-west/bbl-source-sfo.json
+  - put: gcs-kubeconfig-west
+    params:
+      file: kubeconfig/config
+

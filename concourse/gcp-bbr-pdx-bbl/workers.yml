@@ -1,0 +1,62 @@
+name: concourse
+
+releases:
+- name: concourse
+  sha1: 6224188701f71c64a4b51fed47a64f7cecbaeed2
+  url: https://bosh.io/d/github.com/concourse/concourse?v=4.0.0
+  version: 4.0.0
+- name: garden-runc
+  sha1: 1a8805090ae4089dacc28f97996d00012c4c6e93
+  url: https://bosh.io/d/github.com/cloudfoundry/garden-runc-release?v=1.16.0
+  version: 1.16.0
+
+stemcells:
+- alias: trusty
+  os: ubuntu-trusty
+  version: latest
+
+instance_groups:
+- name: worker
+  instances: 1
+  vm_type: large
+  vm_extensions:
+  - 500GB_ephemeral_disk
+  stemcell: trusty
+  azs: [z1]
+  networks: [{name: private}]
+  jobs:
+  - name: worker
+    consumes: {baggageclaim: {from: worker-baggageclaim}}
+    release: concourse
+    properties:
+      tags:
+        - gcp-bbr-pdx
+      tsa:
+        worker_key: ((worker-key))
+        host: ci.kubo.sh
+        host_public_key: ((tsa-host-key.public_key))
+        registration_mode: forward
+      garden:
+        forward_address: 127.0.0.1:7777
+      baggageclaim:
+        forward_address: 127.0.0.1:7788
+  - name: baggageclaim
+    release: concourse
+    provides: {baggageclaim: {as: worker-baggageclaim}}
+    properties:
+      log_level: debug
+      bind_ip: 127.0.0.1
+  - name: garden
+    release: garden-runc
+    properties:
+      garden:
+        forward_address: 127.0.0.1:7777
+        listen_network: tcp
+        listen_address: 127.0.0.1:7777
+
+update:
+  canaries: 1
+  max_in_flight: 1
+  serial: false
+  canary_watch_time: 1000-60000
+  update_watch_time: 1000-60000
